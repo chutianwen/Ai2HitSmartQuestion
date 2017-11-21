@@ -28,7 +28,6 @@ class NeuralNetworks:
 			self.vocab_to_int = np.load(path_vocab_to_int).item()
 			assert isinstance(self.vocab_to_int, dict), "!vocab_to_int is not python dict type"
 			self.vocab_size = len(self.vocab_to_int)
-			print("vocab_size", self.vocab_size)
 		else:
 			logger.error("No vocab_to_int data found, please re-run DataCenter.")
 			exit()
@@ -48,8 +47,8 @@ class NeuralNetworks:
 		return input_train, target_train, input_val, target_val, input_test, target_test
 
 	def get_batches(self, x, y):
-		number_batch = len(x) // self.batch_size
-		for id_batch in range(0, number_batch, self.batch_size):
+		number_batch = int(np.ceil(len(x) / self.batch_size))
+		for id_batch in range(0, number_batch):
 			start = id_batch * self.batch_size
 			end = start + self.batch_size
 			yield x[start:end], y[start:end]
@@ -77,8 +76,7 @@ class NeuralNetworks:
 		# limit = 1.0 / np.sqrt(self.vocab_size)
 		limit = 0.01
 		# enc_embed_input = tf.contrib.layers.embed_sequence(input_data, self.vocab_size, self.embed_size)
-		print(self.vocab_size, self.embed_size)
-		embedding = tf.Variable(tf.random_uniform((self.vocab_size, self.embed_size), -0.01, 0.01))
+		embedding = tf.Variable(tf.random_uniform((self.vocab_size, self.embed_size), -1*limit, limit))
 		enc_embed_input = tf.nn.embedding_lookup(embedding, input_data)
 
 		def build_cell(lstm_size, keep_prob):
@@ -91,15 +89,16 @@ class NeuralNetworks:
 
 		# Stack up multiple LSTM layers, consider multi layer of lstm as one cell
 		enc_cell = tf.contrib.rnn.MultiRNNCell([build_cell(self.lstm_size, keep_prob) for _ in range(self.lstm_layer)])
-		initial_state = enc_cell.zero_state(self.batch_size, tf.float32)
+		current_batch_size = tf.shape(input_data)[0]
+		initial_state = enc_cell.zero_state(current_batch_size, tf.float32)
 		enc_output, enc_state = tf.nn.dynamic_rnn(enc_cell, enc_embed_input, initial_state=initial_state,
 		                                          dtype=tf.float32)
 		return enc_output, enc_state
 
 	def build_output(self, lstm_output):
-		predictions = tf.contrib.layers.fully_connected(lstm_output[:, -1], 1, activation_fn=tf.sigmoid)
-		predict = tf.identity(predictions, name="prediction")
-		return predict
+		predictions = tf.layers.dense(inputs=lstm_output[:, -1], units=1, activation=tf.nn.sigmoid,
+		                              name="prediction")
+		return predictions
 
 	def build_loss(self, predict, labels):
 		cost = tf.losses.mean_squared_error(predictions=predict, labels=labels)
@@ -124,7 +123,6 @@ class NeuralNetworks:
 			enc_output, _ = self.build_encode_layer(input_data=inputs, keep_prob=keep_prob)
 
 			predict = self.build_output(enc_output)
-
 			cost = self.build_loss(predict=predict, labels=targets)
 			optimizer = self.build_optimizer(cost=cost)
 			correct_prediction = tf.equal(tf.cast(tf.round(predict), tf.int32), targets)
@@ -155,7 +153,7 @@ class NeuralNetworks:
 		graph['targets'] = sess.graph.get_tensor_by_name("targets:0")
 		graph['keep_prob'] = sess.graph.get_tensor_by_name("keep_prob:0")
 		graph['cost'] = sess.graph.get_tensor_by_name('cost:0')
-		graph['prediction'] = sess.graph.get_tensor_by_name("prediction:0")
+		graph['prediction'] = sess.graph.get_tensor_by_name("prediction/Sigmoid:0")
 		graph['optimizer'] = sess.graph.get_operation_by_name("optimizer")
 		graph['accuracy'] = sess.graph.get_tensor_by_name("accuracy:0")
 
@@ -172,15 +170,9 @@ class NeuralNetworks:
 			loader.restore(sess, check_point)
 		return graph
 
-	def get_batch(self, x, y):
-
-		num_batch = len(x) // self.batch_size
-		for start in range(0, len(x), self.batch_size):
-			yield x[start:start + self.batch_size], y[start:start + self.batch_size]
-
 	def validate_model(self, sess, inputs, targets, keep_prob, accuracy, x, y):
 		res = []
-		for val_x, val_y in self.get_batch(x, y):
+		for val_x, val_y in self.get_batches(x, y):
 			accuracy_cur = sess.run(accuracy, feed_dict={
 				inputs: val_x,
 				targets: val_y,
@@ -203,8 +195,9 @@ class NeuralNetworks:
 			iteration = 1
 			for epoch in range(self.epochs):
 				saver = tf.train.Saver()
-				for x, y in self.get_batch(input_train, target_train):
-					print(x, y)
+				for x, y in self.get_batches(input_train, target_train):
+					# for r in zip(x,y):
+					# 	print(r)
 					feed = {
 						graph['inputs']: x,
 						graph['targets']: y,
@@ -212,8 +205,7 @@ class NeuralNetworks:
 					}
 					cost, _, prediction = sess.run([graph['cost'], graph['optimizer'],
 					                                graph['prediction']], feed_dict=feed)
-					if iteration % 1 == 0:
-						print("DSDFSDF")
+					if iteration % 10 == 0:
 						logger.info("Epoch: {}/{}\t".format(epoch + 1, self.epochs) +
 						            "Iteration: {}\t".format(iteration) +
 						            "Train loss: {:.3f}\t".format(cost))
@@ -234,7 +226,7 @@ class NeuralNetworks:
 
 	@TaskReporter("Test graph")
 	def inference(self, input_data):
-		print(input_data.shape)
+		# print(input_data.shape)
 		need_build_graph = self.build_graph()
 		with tf.Session(graph=tf.get_default_graph()) as sess:
 			graph = self.load_graph(sess, need_build_graph)
